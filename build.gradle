@@ -35,6 +35,7 @@ plugins {
     id 'org.jmailen.kotlinter' apply false
     id 'com.google.devtools.ksp' apply false
     id 'com.diffplug.spotless' apply false
+    id "dev.iurysouza.modulegraph" version "0.12.0"
 }
 
 allprojects {
