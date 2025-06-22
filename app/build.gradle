@@ -181,6 +181,16 @@ android {
         animationsDisabled = true
         unitTests.all {
             jvmArgs '-XX:+TieredCompilation', '-XX:TieredStopAtLevel=1'
+
+            // Enable test sharding
+            if (project.hasProperty('testShard') && project.hasProperty('totalShards')) {
+                systemProperty 'shardIndex', project.property('testShard')
+                systemProperty 'shardCount', project.property('totalShards')
+                include getShardedTestIncludes(
+                        Integer.parseInt(project.property('testShard')),
+                        Integer.parseInt(project.property('totalShards'))
+                )
+            }
         }
     }
 }
@@ -593,4 +603,42 @@ tasks.register('assemblePlayReleaseDefaultVariant', Exec) {
 
 task newModule(type: com.duckduckgo.gradle.ModuleCreator) {
     feature = project.hasProperty('feature') ? project.getProperty('feature') : null
+}
+
+// Function to determine which tests to include in a shard
+def getShardedTestIncludes(int shardIndex, int shardCount) {
+    def allTests = []
+    
+    // Collect all test files
+    fileTree(dir: 'src/test/java', include: '**/*Test.java').each { file ->
+        String className = file.path
+            .replace('src/test/java/', '')
+            .replace('/', '.')
+            .replace('.java', '')
+        allTests.add(className)
+    }
+    
+    fileTree(dir: 'src/test/kotlin', include: '**/*Test.kt').each { file ->
+        String className = file.path
+            .replace('src/test/kotlin/', '')
+            .replace('/', '.')
+            .replace('.kt', '')
+        allTests.add(className)
+    }
+    
+    // Sort the tests to ensure consistent sharding
+    allTests.sort()
+    
+    // Split tests by shard index
+    def testsPerShard = Math.ceil(allTests.size() / shardCount)
+    def startIndex = (shardIndex - 1) * testsPerShard
+    def endIndex = Math.min(startIndex + testsPerShard, allTests.size())
+    
+    // Return a list of patterns to include
+    def includes = []
+    for (int i = startIndex; i < endIndex; i++) {
+        includes.add("**/${allTests[i].tokenize('.')[-1]}.class")
+    }
+    
+    return includes as String[]
 }
