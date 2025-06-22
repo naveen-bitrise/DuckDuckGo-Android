@@ -631,7 +631,7 @@ def getShardedTestIncludes(int shardIndex, int shardCount) {
     
     // Split tests by shard index
     def testsPerShard = Math.ceil(allTests.size() / shardCount)
-    def startIndex = (shardIndex - 1) * testsPerShard
+    def startIndex = shardIndex  * testsPerShard
     def endIndex = Math.min(startIndex + testsPerShard, allTests.size())
     
     // Return a list of patterns to include
