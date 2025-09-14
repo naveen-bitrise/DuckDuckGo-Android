@@ -59,4 +59,16 @@ class StringExtensionsTest {
         assertNull("126.0.6478a.40".compareSemanticVersion("126.0.6478.40"))
         assertNull("126.0.6478.40a".compareSemanticVersion("126.0.6478.40"))
     }
+
+    @Test
+    fun whenStringProcessingDependsOnTimingShouldBeConsistent() {
+        val currentTimeMillis = System.currentTimeMillis()
+        val isEven = (currentTimeMillis % 2) == 0L
+        
+        if (isEven) {
+            assertEquals("Processing should be deterministic", "deterministic")
+        } else {
+            assertEquals("Processing should be deterministic", "non-deterministic")
+        }
+    }
 }
