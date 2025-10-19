@@ -1,0 +1,1318 @@
+---
+format_version: '23'
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: android
+app:
+  envs:
+  - TEST_SHARD_COUNT: '2'
+  - PROJECT_LOCATION: "./"
+    opts:
+      is_expand: false
+  - MODULE: ad-click/ad-click-api
+    opts:
+      is_expand: false
+  - BITRISE_GIT_COMMIT: ''
+    opts:
+      is_expand: false
+  - BITRISE_BUILD_CACHE_AUTH_TOKEN: <revoked>
+    opts:
+      is_expand: false
+  - BITRISE_BUILD_CACHE_WORKSPACE_ID: c8e286a505ee7c81
+    opts:
+      is_expand: false
+pipelines:
+  pipeline-run-instrumented-tests:
+    workflows:
+      ui-tests-play:
+        parallel: '2'
+      ui-tests-internal:
+        parallel: '2'
+  parallel-flag:
+    workflows:
+      build-with-parallel-flag: {}
+      build-without-parallel-flag: {}
+  build-cache:
+    workflows:
+      build-without-cache: {}
+      build-with-dependency-cache: {}
+      build-with-dep-n-remote-build-caches: {}
+      build-will-all-three-caches: {}
+  build-cache-analysis:
+    workflows:
+      build-without-cache: {}
+      build-with-dependency-cache: {}
+  pipeline-run-unit-tests:
+    workflows:
+      build-before-test: {}
+      unit-tests-sharded:
+        depends_on:
+        - build-before-test
+        parallel: '3'
+  pipeline-run-unit-tests-v2:
+    workflows:
+      unit-tests-sharded:
+        parallel: '2'
+      unit-tests-no-shards: {}
+  Pipeline-Release:
+    workflows: {}
+  pipeline-run-ui-tests-no-shards:
+    workflows:
+      ui-tests-play-no-shards: {}
+      ui-tests-internal-no-shards: {}
+  pipeline-run-unit-tests-v3:
+    workflows:
+      unit-tests-build-only: {}
+      unit-tests-run-tests:
+        depends_on:
+        - unit-tests-build-only
+        parallel: "$TEST_SHARD_COUNT"
+workflows:
+  build_apk:
+    summary: Run your Android unit tests and create an APK file to install your app
+      on a device or share it with your team.
+    description: The workflow will first clone your Git repository, install Android
+      tools, set the project's version code based on the build number, run
+      Android lint and unit tests, build the project's APK file and save it.
+    steps:
+    - git-clone@8: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - change-android-versioncode-and-versionname@1:
+        inputs:
+        - build_gradle_path: "$PROJECT_LOCATION/$MODULE/build.gradle"
+    - android-lint@0:
+        inputs:
+        - project_location: "$PROJECT_LOCATION"
+        - variant: "$VARIANT"
+        - cache_level: none
+    - android-unit-test@1:
+        inputs:
+        - project_location: "$PROJECT_LOCATION"
+        - variant: "$VARIANT"
+        - cache_level: none
+    - android-build@1:
+        inputs:
+        - project_location: "$PROJECT_LOCATION"
+        - module: "$MODULE"
+        - variant: "$VARIANT"
+        - cache_level: none
+    - sign-apk@1:
+        run_if: '{{getenv "BITRISEIO_ANDROID_KEYSTORE_URL" | ne ""}}'
+    - deploy-to-bitrise-io@2: {}
+  run_instrumented_tests:
+    summary: Run your Android instrumented tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android instrumented
+      tests and save the test report.
+    steps:
+    - git-clone@8: {}
+    - restore-gradle-cache@2: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - avd-manager@2: {}
+    - wait-for-android-emulator@1: {}
+    - gradle-runner@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+        - gradle_task: |-
+            connectedAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.numShards=$BITRISE_IO_PARALLEL_TOTAL \
+              -Pandroid.testInstrumentationRunnerArguments.shardIndex=$BITRISE_IO_PARALLEL_INDEX
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  run_tests:
+    summary: Run your Android unit tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android unit tests
+      and save the test report.
+    steps:
+    - git-clone@8: {}
+    - restore-gradle-cache@2:
+        run_if: false
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - bitrise-run@0:
+        inputs:
+        - workflow_id: run_tests
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            # write your script here
+            sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+        title: Reclaim space
+    - android-unit-test@1: {}
+    - script@1:
+        inputs:
+        - content: "#!/usr/bin/env bash
+
+            # fail if any commands fails
+
+            set -e
+
+            # make pipelines' return status equal the last command to exit with
+            a non-zero status, or zero if all commands exit successfully
+
+            set -o pipefail
+
+            # debug log
+
+            set -x
+
+
+            # write your script here
+
+            ./gradlew jvm_tests
+
+            find . -type d -name 'reports' | zip -@ -r unit-tests-report.zip
+
+
+            # Move zip to deploy directory so it's available as artifact
+
+            mv unit-tests-report.zip $BITRISE_DEPLOY_DIR/
+
+
+            # Copy HTML reports to BITRISE_HTML_REPORT_DIR
+
+            # Find all test report directories and copy them with module names
+            as subfolders
+
+            find . -path \"*/build/reports/tests/testDebugUnitTest\" -type d |
+            while read report_dir; do
+
+            \    if [ -f \"$report_dir/index.html\" ]; then
+
+            \        # Extract module path (e.g., \"autofill/autofill-impl\")
+
+            \        module_path=$(echo \"$report_dir\" | sed
+            's|/build/reports/tests/testDebugUnitTest||' | sed 's|^\\./||')
+
+            \        # Create safe directory name by replacing / with -
+
+            \        safe_module_name=$(echo \"$module_path\" | sed 's|/|-|g')
+
+            \       \ 
+
+            \        # Copy entire report directory to BITRISE_HTML_REPORT_DIR
+            subfolder
+
+            \        cp -r \"$report_dir\"
+            \"$BITRISE_HTML_REPORT_DIR/$safe_module_name\"
+
+            \       \ 
+
+            \        echo \"Copied report: $module_path -> $safe_module_name\"
+
+            \    fi
+
+            done
+
+
+            echo \"HTML reports structure:\"
+
+            find $BITRISE_HTML_REPORT_DIR -name \"index.html\" -exec echo
+            \"Report: {}\" \\;"
+        run_if: false
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+    triggers:
+      pull_request:
+      - target_branch: develop
+  analysis:
+    steps:
+    - bundle::build: {}
+  build-with-parallel-flag:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.7x-large
+  build-with-dependency-cache:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - restore-gradle-cache@2:
+        title: 'Gradle Dependency Cache: Restore'
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin --info
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - save-gradle-cache@1:
+        title: 'Gradle Dependency Cache: Save'
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  build-without-parallel-flag:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew -Dorg.gradle.parallel=false compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.7x-large
+  build-with-dep-n-remote-build-caches:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2:
+        title: 'Gradle Dependency Cache: Restore'
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - save-gradle-cache@1:
+        title: 'Gradle Dependency Cache: Save'
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  build-will-all-three-caches:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2:
+        title: 'Gradle Dependency Cache: Restore'
+    - restore-gradle-configuration-cache@1: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin --info
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - save-gradle-configuration-cache@1: {}
+    - save-gradle-cache@1:
+        title: 'Gradle Dependency Cache: Save'
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  build-without-cache:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  build-with-remote-cache-diagnostics:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            # write your script here
+            /tmp/bin/bitrise-build-cache restore-gradle-output-data
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+        title: Restore Gradle Output Data
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin --info
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            /tmp/bin/bitrise-build-cache save-gradle-output-data
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+        title: Save Gradle Output Data
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  unit-tests-sharded:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - script@1:
+        inputs:
+        - content: "#!/usr/bin/env bash
+
+            set -exo pipefail
+
+            \    \ 
+
+            # BITRISE_IO_PARALLEL_INDEX is 1-based, so we can use it directly
+
+            SHARD_INDEX=$BITRISE_IO_PARALLEL_INDEX
+
+            TOTAL_SHARDS=$BITRISE_IO_PARALLEL_TOTAL
+
+
+            echo \"Running test shard $SHARD_INDEX of $TOTAL_SHARDS\"
+
+
+            # Use --no-rebuild to skip compilation since we already compiled
+
+            ./gradlew testDebugUnitTest \\
+
+            -PtestShard=$SHARD_INDEX \\
+
+            -PtotalShards=$TOTAL_SHARDS \\
+
+            --rerun
+
+            #--no-rebuild"
+        title: Run Tests
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            mkdir -p $BITRISE_TEST_RESULT_DIR
+            find . -type f -path "*/build/test-results/*/*.xml" -exec cp {} $BITRISE_TEST_RESULT_DIR \;
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  build-before-test:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2:
+        title: 'Gradle Dependency Cache: Restore'
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew assembleDebug
+        title: Compile Sources
+    - save-gradle-cache@1:
+        title: 'Gradle Dependency Cache: Save'
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  unit-tests-no-shards:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - android-unit-test@1: {}
+    - script@1:
+        inputs:
+        - content: "#!/usr/bin/env bash
+
+            set -exo pipefail
+
+            \    \ 
+
+            # BITRISE_IO_PARALLEL_INDEX is 1-based, so we can use it directly
+
+            SHARD_INDEX=$BITRISE_IO_PARALLEL_INDEX
+
+            TOTAL_SHARDS=$BITRISE_IO_PARALLEL_TOTAL
+
+
+            # Use --no-rebuild to skip compilation since we already compiled
+
+            ./gradlew testDebugUnitTest --rerun
+
+            #--no-rebuild"
+        title: Run Tests
+        run_if: false
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            mkdir -p $BITRISE_TEST_RESULT_DIR
+            find . -type f -path "*/build/test-results/*/*.xml" -exec cp {} $BITRISE_TEST_RESULT_DIR \;
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  ui-tests-internal:
+    summary: Run your Android instrumented tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android instrumented
+      tests and save the test report.
+    steps:
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - avd-manager@2: {}
+    - wait-for-android-emulator@1: {}
+    - gradle-runner@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+        - gradle_task: |-
+            :app:connectedInternalDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.numShards=$BITRISE_IO_PARALLEL_TOTAL \
+              -Pandroid.testInstrumentationRunnerArguments.shardIndex=$BITRISE_IO_PARALLEL_INDEX
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  ui-tests-play:
+    summary: Run your Android instrumented tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android instrumented
+      tests and save the test report.
+    steps:
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - avd-manager@2: {}
+    - wait-for-android-emulator@1: {}
+    - gradle-runner@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+        - gradle_task: |-
+            :app:connectedPlayDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.numShards=$BITRISE_IO_PARALLEL_TOTAL \
+              -Pandroid.testInstrumentationRunnerArguments.shardIndex=$BITRISE_IO_PARALLEL_INDEX
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  release-fdroid: {}
+  release-internal: {}
+  release-play: {}
+  ui-tests-play-no-shards:
+    summary: Run your Android instrumented tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android instrumented
+      tests and save the test report.
+    steps:
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - avd-manager@2: {}
+    - wait-for-android-emulator@1: {}
+    - gradle-runner@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+        - gradle_task: ":app:connectedPlayDebugAndroidTest"
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  ui-tests-internal-no-shards:
+    summary: Run your Android instrumented tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android instrumented
+      tests and save the test report.
+    steps:
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - avd-manager@2: {}
+    - wait-for-android-emulator@1: {}
+    - gradle-runner@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+        - gradle_task: ":app:connectedInternalDebugAndroidTest"
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  Puase-Release-Workflow:
+    steps:
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            # write your script here
+            echo "$EMBRACE_APP_ID"
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+        title: Get App Parameters
+    - script-runner@0:
+        title: Pause Release
+    - script@1:
+        title: Get CrashLogs & Identify Issue (Future)
+    - slack@4:
+        title: Notify Team
+    meta:
+      bitrise.io:
+        stack: osx-xcode-26.0.x-edge
+        machine_type_id: g2.mac.medium
+  unit-tests-build-only:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - script@1:
+        title: Compile Code but Skip Tests
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            # write your script here
+            ./gradlew assembleDebug assembleDebugUnitTest -x test
+
+            # or run a script from your repository, like:
+            # bash ./path/to/script.sh
+            # not just bash, e.g.:
+            # ruby ./path/to/script.rb
+    - script@1:
+        title: Create Sharded Packages
+        inputs:
+        - content: "#!/usr/bin/env bash
+
+            # fail if any commands fails
+
+            set -e
+
+            # make pipelines' return status equal the last command to exit with
+            a non-zero status, or zero if all commands exit successfully
+
+            set -o pipefail
+
+            # debug log
+
+            set -x
+
+            # Define a function to add files to tar only if they exist
+
+            add_if_exists() {
+
+            \    local files=\"\"
+
+            \    for item in \"$@\"; do
+
+            \        if [ -e \"$item\" ]; then
+
+            \            files=\"$files $item\"
+
+            \        else
+
+            \            # Don't print anything to stdout to avoid contaminating
+            the return value
+
+            \            echo \"Skipping non-existent file/directory: $item\"
+            >&2
+
+            \        fi
+
+            \    done
+
+            \    echo \"$files\"
+
+            }
+
+
+            # Get test tasks
+
+            TEST_TASKS=($(./gradlew tasks --all | grep -E \"test.*UnitTest\" |
+            awk '{print $1}' | sort))
+
+            echo \"Found ${#TEST_TASKS[@]} test tasks\"
+
+
+            # Define number of shards
+
+            TOTAL_SHARDS=${TEST_SHARD_COUNT:-2}
+
+
+            # Create directory for shard artifacts
+
+            mkdir -p shards
+
+
+            # Calculate tasks per shard
+
+            TASKS_PER_SHARD=$(( (${#TEST_TASKS[@]} + TOTAL_SHARDS - 1) /
+            TOTAL_SHARDS ))
+
+
+            # Prepare each shard
+
+            for SHARD_INDEX in $(seq 0 $((TOTAL_SHARDS-1))); do
+
+            \    # Calculate start and end indices
+
+            \    START_INDEX=$((SHARD_INDEX * TASKS_PER_SHARD))
+
+            \    END_INDEX=$(( START_INDEX + TASKS_PER_SHARD ))
+
+            \   \ 
+
+            \    # Check bounds
+
+            \    if [[ $END_INDEX -gt ${#TEST_TASKS[@]} ]]; then
+
+            \        END_INDEX=${#TEST_TASKS[@]}
+
+            \    fi
+
+            \   \ 
+
+            \    # Create tasks file for this shard
+
+            \    echo \"Creating shard $SHARD_INDEX
+            ($START_INDEX-$((END_INDEX-1)))\"
+
+            \    mkdir -p shards/shard_$SHARD_INDEX
+
+            \   \ 
+
+            \    # Write tasks to run for this shard
+
+            \    for i in $(seq $START_INDEX $((END_INDEX-1))); do
+
+            \        echo \"${TEST_TASKS[$i]}\" >>
+            shards/shard_$SHARD_INDEX/test_tasks.txt
+
+            \    done
+
+            \   \ 
+
+            \    # Create a runner script for this shard
+
+            \    cat > shards/shard_$SHARD_INDEX/run_tests.sh << 'EOF'
+
+            #!/bin/bash
+
+            # This script runs tests for a specific shard
+
+
+            # Navigate to the correct directory where gradlew is located
+
+            cd bitrise/src
+
+
+            # Define the path to test_tasks.txt
+
+            TEST_TASKS_FILE=\"../../test_tasks.txt\"
+
+
+            # Run the tests without compilation
+
+            TEST_COMMAND=\"./gradlew --stacktrace --info --offline \"
+
+
+            # Skip compilation steps
+
+            #TEST_COMMAND+=\" -x compileDebugSources -x
+            compileDebugUnitTestSources\"
+
+
+            # Add each test task
+
+            while read TASK; do
+
+            \    # Only include actual test execution tasks, not compile tasks
+
+            \    if [[ \"$TASK\" == *\"test\"*\"UnitTest\" ]]; then
+
+            \        TEST_COMMAND+=\" \\\"$TASK\\\"\"
+
+            \    fi
+
+            done < \"$TEST_TASKS_FILE\"
+
+
+            echo \"Running command: $TEST_COMMAND\"
+
+            eval $TEST_COMMAND
+
+
+            EOF
+
+            \    chmod +x shards/shard_$SHARD_INDEX/run_tests.sh
+
+            \   \ 
+
+            \    # Start with the shard directory itself
+
+            \    TAR_BASE_CMD=\"tar -czf shards/shard_${SHARD_INDEX}.tar.gz -C
+            shards/shard_$SHARD_INDEX . --transform 's,^,shard_files/,'\"
+
+            \   \ 
+
+            \    # Create lists of files to include
+
+            \    GRADLE_FILES=$(add_if_exists \\
+
+            \        \"$(pwd)/gradlew\" \\
+
+            \        \"$(pwd)/gradle\" \\
+
+            \        \"$(pwd)/gradle.properties\" \\
+
+            \        \"$(pwd)/gradlew.bat\" \\
+
+            \        \"$(pwd)/settings.gradle\" \\
+
+            \        \"$(pwd)/build.gradle\" \\
+
+            \        \"$(pwd)/.gradle\")
+
+            \   \ 
+
+            \    BUILD_DIRS=$(add_if_exists \\
+
+            \        \"$(pwd)/build\" \\
+
+            \        \"$(pwd)/app/build\" \\
+
+            \        \"$(pwd)/app-store/build\" \\
+
+            \        \"$(pwd)/browser-api/build\" \\
+
+            \        \"$(pwd)/buildSrc/build\" \\
+
+            \        \"$(pwd)/di/build\")
+
+            \   \ 
+
+            \    TEST_DIRS=$(add_if_exists \\
+
+            \        \"$(pwd)/app/src/test\" \\
+
+            \        \"$(pwd)/buildSrc/src/test\" \\
+
+            \        \"$(pwd)/lint-rules/src/test\")
+
+            \   \ 
+
+            \    # Find all testDebug directories
+
+            \    echo \"Finding testDebug directories...\"
+
+            \    TEST_DEBUG_DIRS=\"\"
+
+            \    for dir in $(find \"$(pwd)\" -path \"*/src/testDebug\" -type d
+            2>/dev/null); do
+
+            \        TEST_DEBUG_DIRS=\"$TEST_DEBUG_DIRS $dir\"
+
+            \    done
+
+            \   \ 
+
+            \    # Build the final command with all existing files/directories
+
+            \    echo \"Creating tar command...\"
+
+            \    ALL_FILES=\"$GRADLE_FILES $BUILD_DIRS $TEST_DIRS
+            $TEST_DEBUG_DIRS\"
+
+            \   \ 
+
+            \    if [ -n \"$ALL_FILES\" ]; then
+
+            \        TAR_CMD=\"$TAR_BASE_CMD $ALL_FILES\"
+
+            \        echo \"Executing tar command to create shard package...\"
+
+            \        eval $TAR_CMD
+
+            \       \ 
+
+            \        # Check if the tar command succeeded
+
+            \        if [ $? -eq 0 ]; then
+
+            \            echo \"Successfully created shard package:
+            shards/shard_${SHARD_INDEX}.tar.gz\"
+
+            \        else
+
+            \            echo \"Failed to create shard package\"
+
+            \            exit 1
+
+            \        fi
+
+            \    else
+
+            \        echo \"No files to package! Something is wrong.\"
+
+            \        exit 1
+
+            \    fi
+
+            done
+
+
+            # Print info about created shards
+
+            for SHARD_INDEX in $(seq 0 $((TOTAL_SHARDS-1))); do
+
+            \    echo \"Shard $SHARD_INDEX package size: $(du -h
+            shards/shard_${SHARD_INDEX}.tar.gz | cut -f1)\"
+
+            done
+
+
+            # Create a manifest file with information about shards
+
+            echo \"TOTAL_SHARDS=$TOTAL_SHARDS\" > shards/manifest.txt
+
+
+            # Set environment variable for the shards directory
+
+            envman add --key BITRISE_TEST_SHARDS_PATH --value \"$(pwd)/shards\""
+        run_if: false
+    - script@1:
+        title: Create Shard V2
+        inputs:
+        - content: "#!/bin/bash
+
+            # Sharding for DuckDuckGo Android with project files
+
+
+            # Get test tasks
+
+            TEST_TASKS=($(./gradlew tasks --all | grep -E \"test.*UnitTest\" |
+            awk '{print $1}' | sort))
+
+            echo \"Found ${#TEST_TASKS[@]} test tasks\"
+
+
+            # Define number of shards
+
+            TOTAL_SHARDS=${TEST_SHARD_COUNT:-2}
+
+
+            # Create directory for shard artifacts
+
+            mkdir -p shards
+
+
+            # Calculate tasks per shard
+
+            TASKS_PER_SHARD=$(( (${#TEST_TASKS[@]} + TOTAL_SHARDS - 1) /
+            TOTAL_SHARDS ))
+
+
+            # Create a base project package with minimal files needed to run
+            tests
+
+            BASE_PROJECT=\"base-project\"
+
+            mkdir -p $BASE_PROJECT
+
+
+            # Copy essential project files (adjust based on your project
+            structure)
+
+            cp -r gradlew gradlew.bat gradle settings.gradle build.gradle
+            $BASE_PROJECT/
+
+            find . -maxdepth 1 -type d -not -path \"./\\.*\" -not -path
+            \"./shards\" -not -path \"./$BASE_PROJECT\" -exec cp -r {}
+            $BASE_PROJECT/ \\;
+
+
+            # Copy build directories with compiled classes
+
+            find . -path \"*/build/intermediates/javac\" -type d -exec cp -r {}
+            $BASE_PROJECT/ \\;
+
+            find . -path \"*/build/tmp\" -type d -exec cp -r {} $BASE_PROJECT/
+            \\;
+
+            find . -path
+            \"*/build/intermediates/asm_instrumented_project_classes\" -type d
+            -exec cp -r {} $BASE_PROJECT/ \\;
+
+
+            # Copy .gradle directory for caches
+
+            mkdir -p $BASE_PROJECT/.gradle
+
+            cp -r .gradle/caches $BASE_PROJECT/.gradle/
+
+
+            echo \"Base project size: $(du -sh $BASE_PROJECT)\"
+
+
+            # Prepare each shard
+
+            for SHARD_INDEX in $(seq 0 $((TOTAL_SHARDS-1))); do
+
+            \    # Calculate start and end indices
+
+            \    START_INDEX=$((SHARD_INDEX * TASKS_PER_SHARD))
+
+            \    END_INDEX=$(( START_INDEX + TASKS_PER_SHARD ))
+
+            \   \ 
+
+            \    # Check bounds
+
+            \    if [[ $END_INDEX -gt ${#TEST_TASKS[@]} ]]; then
+
+            \        END_INDEX=${#TEST_TASKS[@]}
+
+            \    fi
+
+            \   \ 
+
+            \    # Create tasks file for this shard
+
+            \    echo \"Creating shard $SHARD_INDEX
+            ($START_INDEX-$((END_INDEX-1)))\"
+
+            \    mkdir -p shards/shard_$SHARD_INDEX
+
+            \   \ 
+
+            \    # Write tasks to run for this shard
+
+            \    for i in $(seq $START_INDEX $((END_INDEX-1))); do
+
+            \        echo \"${TEST_TASKS[$i]}\" >>
+            shards/shard_$SHARD_INDEX/test_tasks.txt
+
+            \    done
+
+            \   \ 
+
+            \    # Create a script to run tests
+
+            \    cat > shards/shard_$SHARD_INDEX/run_tests.sh << 'EOF'
+
+            #!/bin/bash
+
+            # Run tests in the DuckDuckGo Android project
+
+
+            # Check where we are
+
+            echo \"Current directory: $(pwd)\"
+
+
+            # Navigate to the project directory
+
+            cd project
+
+
+            # Run the tests in offline mode
+
+            TEST_COMMAND=\"./gradlew --offline --stacktrace --info\"
+
+
+            # Add each test task
+
+            while read TASK; do
+
+            \    TEST_COMMAND+=\" \\\"$TASK\\\"\"
+
+            done < ../test_tasks.txt
+
+
+            echo \"Running command: $TEST_COMMAND\"
+
+            eval $TEST_COMMAND
+
+            EOF
+
+            \    chmod +x shards/shard_$SHARD_INDEX/run_tests.sh
+
+            \   \ 
+
+            \    # Copy the base project to the shard
+
+            \    cp -r $BASE_PROJECT shards/shard_$SHARD_INDEX/project
+
+            \   \ 
+
+            \    # Package this shard
+
+            \    echo \"Packaging shard $SHARD_INDEX...\"
+
+            \    tar -czf shards/shard_${SHARD_INDEX}.tar.gz -C
+            shards/shard_$SHARD_INDEX .
+
+            \   \ 
+
+            \    echo \"Created shard $SHARD_INDEX with $(wc -l <
+            shards/shard_$SHARD_INDEX/test_tasks.txt) tasks\"
+
+            \    echo \"Shard size: $(du -sh
+            shards/shard_${SHARD_INDEX}.tar.gz)\"
+
+            done
+
+
+            # Set environment variable for the shards directory
+
+            envman add --key BITRISE_TEST_SHARDS_PATH --value \"$(pwd)/shards\""
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2:
+        inputs:
+        - pipeline_intermediate_files: BITRISE_TEST_SHARDS_PATH
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.x-large
+  unit-tests-run-tests:
+    steps:
+    - pull-intermediate-files@1: {}
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@2: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            # fail if any commands fails
+            set -e
+            # make pipelines' return status equal the last command to exit with a non-zero status, or zero if all commands exit successfully
+            set -o pipefail
+            # debug log
+            set -x
+
+            # write your script here
+            SHARD_INDEX=${BITRISE_IO_PARALLEL_INDEX:-0}
+            echo "This is test VM for shard $SHARD_INDEX"
+
+            # Create work directory
+            mkdir -p test_workdir
+            cd test_workdir
+
+            # The shards directory is available at $BITRISE_TEST_SHARDS_PATH
+            echo "Using shards from: $BITRISE_TEST_SHARDS_PATH"
+
+            # Copy the shard package for this VM's shard index
+            echo "Copying shard package for shard $SHARD_INDEX"
+            cp "$BITRISE_TEST_SHARDS_PATH/shard_${SHARD_INDEX}.tar.gz" ./shard.tar.gz
+
+            # Extract the shard package
+            echo "Extracting shard package"
+            tar -xzf shard.tar.gz
+
+            # Run the tests
+            echo "Running tests for shard $SHARD_INDEX"
+            cd shard_files
+            ./run_tests.sh
+        run_if: false
+    - script@1:
+        inputs:
+        - content: |-
+            #!/bin/bash
+            # Test VM script
+
+            # Get shard index
+            SHARD_INDEX=${BITRISE_IO_PARALLEL_INDEX:-0}
+
+            # Create work directory
+            mkdir -p test_workdir
+            cd test_workdir
+
+            # Get the shard package
+            cp "$BITRISE_TEST_SHARDS_PATH/shard_${SHARD_INDEX}.tar.gz" ./shard.tar.gz
+
+            # Extract the shard
+            tar -xzf shard.tar.gz
+
+            # Run the tests
+            ./run_tests.sh
+        title: Script V2
+step_bundles:
+  build:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - restore-gradle-cache@2:
+        title: 'Gradle Dependency Cache: Restore'
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew -Dorg.gradle.parallel=true compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - save-gradle-cache@1:
+        title: 'Gradle Dependency Cache: Save'
+    - deploy-to-bitrise-io@2: {}
+  activate-build-cache:
+    steps:
+    - activate-build-cache-for-gradle@2: {}
+  build-without-cache:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew -Dorg.gradle.parallel=false compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - deploy-to-bitrise-io@2: {}
+  build-without-cache-parallel:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@8: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -exo pipefail
+
+            ./gradlew compileDebugUnitTestKotlin
+        title: "./gradlew compileDebugUnitTestKotlin"
+    - deploy-to-bitrise-io@2: {}
+meta:
+  bitrise.io:
+    stack: linux-docker-android-22.04
+    machine_type_id: standard
